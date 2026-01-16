@@ -1,1 +1,867 @@
+-- =========================================================
+-- CHARGEMENT DE FLUENT ET INTERFACE
+-- =========================================================
+local Fluent = loadstring(game:HttpGet("https://github.com/dawid-scripts/Fluent/releases/latest/download/main.lua"))()
+local SaveManager = loadstring(game:HttpGet("https://raw.githubusercontent.com/ImBrokz89/test/main/addons"))()
+local InterfaceManager = loadstring(game:HttpGet("https://raw.githubusercontent.com/ImBrokz89/test/main/Maddons"))()
 
+local Window = Fluent:CreateWindow({
+   Title = "Escape Tsunami For Brainrots I Omega Hub",
+   TabWidth = 160,
+   Size = UDim2.fromOffset(580, 460),
+   Theme = "Dark",
+   Acrylic = false,
+   MinimizeKey = Enum.KeyCode.End 
+})
+
+local Tabs = {
+    Farm = Window:AddTab({ Title = "Farm", Icon = "sword" }),
+    Players = Window:AddTab({Title = "Player", Icon = "layers" }),
+    Grab = Window:AddTab({ Title = "Grab", Icon = "flame" }),
+    Settings = Window:AddTab({ Title = "Settings", Icon = "settings" })
+}
+-- =========================================================
+-- SERVICES
+local Players = game:GetService("Players")
+local Workspace = game:GetService("Workspace")
+local RunService = game:GetService("RunService")
+local HttpService = game:GetService("HttpService")
+
+local LocalPlayer = Players.LocalPlayer
+local UserId = LocalPlayer.UserId
+
+local BrainrotsFolder = Workspace:WaitForChild("ActiveBrainrots")
+local BasesFolder = Workspace:WaitForChild("Bases")
+local TsunamisFolder = Workspace:WaitForChild("ActiveTsunamis")
+
+-- =========================================================
+-- DEBUG
+local DEBUG = true
+local function dprint(...)
+    if DEBUG then
+        print("[DEBUG]", ...)
+    end
+end
+
+-- =========================================================
+-- HTTP EXECUTOR CHECK
+local HttpRequest =
+    (syn and syn.request)
+    or (http and http.request)
+    or http_request
+    or request
+    or (fluxus and fluxus.request)
+
+if not HttpRequest then
+    error("❌ Executor incompatible (HTTP requis)")
+end
+
+-- =========================================================
+-- WEBHOOK
+local WebhookFile = "BrainrotWebhook.txt"
+local DiscordIdFile = "BrainrotDiscordID.txt"
+
+local WebhookUrl = ""
+local DiscordID = ""
+
+pcall(function() WebhookUrl = readfile(WebhookFile) end)
+pcall(function() DiscordID = readfile(DiscordIdFile) end)
+
+local RareMutations = { Diamond = true, Electric = true }
+local WebhookEnabled = false
+
+local function sendWebhook(data, reason)
+    if not WebhookEnabled or WebhookUrl == "" then return end
+
+    task.spawn(function() -- 🔒 isolation anti-crash
+        local success, err = pcall(function()
+            HttpRequest({
+                Url = WebhookUrl,
+                Method = "POST",
+                Headers = { ["Content-Type"] = "application/json" },
+                Body = HttpService:JSONEncode({
+                    content = "",
+                    username = "Brainrot Logger",
+                    embeds = {{
+                        title = reason == "SPAWN" and "🧠 Brainrot Spawned" or "🎯 Brainrot Grabbed",
+                        color = reason == "SPAWN" and 16753920 or 5793266,
+                        fields = {
+                            { name = "Name", value = data.Name },
+                            { name = "Mutation", value = data.Mutation },
+                            { name = "Class", value = data.Class },
+                            { name = "Rate", value = data.Rate }
+                        }
+                    }}
+                })
+            })
+        end)
+
+        if not success then
+            dprint("⚠️ Webhook ignoré :", err)
+        end
+    end)
+end
+
+-- =========================================================
+-- VARIABLES
+local AutoGrab = false
+local Processing = {}
+local Connections = {}
+local SlideConnection = nil
+local OverrideWaveCheck = false
+local SAFE_ZONE_LOCK_RADIUS = 4 -- tolérance en studs
+local IN_SAFE_ZONE = false
+local CURRENT_SAFE_ZONE = nil
+local RUN_ID = 0
+
+local LastWaveEscape = 0
+local WAVE_ESCAPE_COOLDOWN = 0
+local EMERGENCY_DISTANCE = 200
+local SAFE_ANCHOR = false
+
+-- =========================================================
+-- SAFE ZONES
+local SafeZones = {
+    Vector3.new(201.137, -2.820, -9.582),
+    Vector3.new(281.290, -2.820, -2.088),
+    Vector3.new(396.021, -2.820, 4.207),
+    Vector3.new(198.044, -2.820, 5.441),
+    Vector3.new(287.627, -2.820, 4.897),
+    Vector3.new(401.417, -2.820, 5.993),
+    Vector3.new(542.917, -2.820, -17.325),
+    Vector3.new(758.979, -2.820, -2.292),
+    Vector3.new(1077.535, -2.820, 4.278),
+    Vector3.new(1556.841, -2.820, -5.601),
+    Vector3.new(2243.831, -2.820, 2.841),
+    Vector3.new(2632.953, -2.820, -62.903)
+}
+
+-- =========================================================
+-- BRAINROTS
+local AllBrainrots = {
+    "Fragola La La La",
+    "Matteo",
+    "Job Job Job Sahur",
+    "Dug Dug Dug",
+    "Bisonte Giuppitere",
+    "Alessio",
+    "Esok Sekolah"
+}
+
+local SelectedBrainrots = {}
+
+-- =========================================================
+-- UTILS
+local function getChar() return LocalPlayer.Character or LocalPlayer.CharacterAdded:Wait() end
+local function getHRP() return getChar():WaitForChild("HumanoidRootPart") end
+local function getHumanoid() return getChar():WaitForChild("Humanoid") end
+local function getSpeed() return LocalPlayer:GetAttribute("CurrentSpeed") or 120 end
+
+local function disableCollision()
+    for _, v in ipairs(getChar():GetDescendants()) do
+        if v:IsA("BasePart") and v.Name ~= "HumanoidRootPart" then
+            v.CanCollide = false
+        end
+    end
+end
+
+local function getMyBase()
+    for i = 1, 5 do
+        local base = BasesFolder:FindFirstChild("Base" .. i)
+        if base and base:GetAttribute("Holder") == UserId then
+            return base
+        end
+    end
+end
+
+local function getModelPosition(model)
+    if model.PrimaryPart then return model.PrimaryPart.Position end
+    return model:GetPivot().Position
+end
+
+local function getPrompt(model)
+    for _, v in ipairs(model:GetDescendants()) do
+        if v:IsA("ProximityPrompt") then return v end
+    end
+end
+
+local function getBrainrotStats(model)
+    local h = model:FindFirstChild("Handle")
+    local gui = h and h:FindFirstChild("StatsGui")
+    local frame = gui and gui:FindFirstChild("Frame")
+    if not frame then return nil end
+
+    return {
+        Name = frame.BrainrotName.Text,
+        Mutation = frame.Mutation.Visible and frame.Mutation.Text or "None",
+        Class = frame.Class.Text,
+        Rate = frame.Rate.Text
+    }
+end
+
+-- =========================================================
+-- SMART WAVE DETECTION (DEBUG)
+local LastWaveDistances = {}
+
+local function waveApproaching()
+    local pos = getHRP().Position
+
+    for _, wave in ipairs(TsunamisFolder:GetChildren()) do
+        if wave:IsA("Model") and wave.PrimaryPart then
+            local dist = (wave.PrimaryPart.Position - pos).Magnitude
+            local last = LastWaveDistances[wave] or math.huge
+            LastWaveDistances[wave] = dist
+
+            dprint("Wave check | dist:", math.floor(dist), "last:", math.floor(last))
+
+            if dist < 250 and dist < last then
+                dprint("⚠️ Wave APPROCHE | dist:", math.floor(dist))
+                return true, dist
+            end
+        end
+    end
+
+    return false, math.huge
+end
+
+local function getClosestSafeZone()
+    local hrpPos = getHRP().Position
+    local best, dist = nil, math.huge
+
+    for _, zone in ipairs(SafeZones) do
+        local d = (zone - hrpPos).Magnitude
+        if d < dist then
+            best, dist = zone, d
+        end
+    end
+
+    dprint("SafeZone choisie | dist:", math.floor(dist))
+    return best
+end
+
+local function getSafeZoneAwayFromWave()
+    local hrp = getHRP()
+    if not hrp then return nil end
+
+    local hrpPos = hrp.Position
+    local bestZone = nil
+    local bestScore = -math.huge
+
+    for _, wave in ipairs(TsunamisFolder:GetChildren()) do
+        if wave:IsA("Model") and wave.PrimaryPart then
+            local wavePos = wave.PrimaryPart.Position
+
+            -- direction POUR FUIR la wave (derrière le joueur)
+            local escapeDir = (hrpPos - wavePos).Unit
+
+            for _, zone in ipairs(SafeZones) do
+                local vec = zone - hrpPos
+                local dist = vec.Magnitude
+                if dist > 0 then
+                    local dir = vec.Unit
+                    local dot = escapeDir:Dot(dir)
+
+                    -- 🔒 STRICTEMENT DERRIÈRE (sinon on ignore)
+                    if dot > 0.65 then
+                        local score = dot * 1000 - dist
+                        if score > bestScore then
+                            bestScore = score
+                            bestZone = zone
+                        end
+                    end
+                end
+            end
+        end
+    end
+
+    return bestZone -- ⚠️ peut être nil (et c'est OK)
+end
+
+
+local scanExisting
+local connectAll
+local disconnectAll
+local slideTo
+local forceSafeZone
+local stopSlide
+
+forceSafeZone = function()
+    if IN_SAFE_ZONE then return end
+
+    local safe = getSafeZoneAwayFromWave()
+if not safe then
+    dprint("⛔ Aucune safe zone derrière → attente passive")
+
+    repeat
+        task.wait(0.2)
+    until not waveApproaching()
+
+    -- 🔓 NE PAS BLOQUER LE SCRIPT
+    OverrideWaveCheck = false
+    IN_SAFE_ZONE = false
+    CURRENT_SAFE_ZONE = nil
+
+    dprint("✅ Wave passée → reprise normale")
+    return
+end
+
+
+
+    dprint("🚨 SAFE ZONE -> arrière uniquement")
+    CURRENT_SAFE_ZONE = safe
+    OverrideWaveCheck = true
+    slideTo(safe, 0.1)
+
+    repeat
+        task.wait(0.1)
+    until not getHRP() or (getHRP().Position - safe).Magnitude < 2
+
+    stopSlide()
+    IN_SAFE_ZONE = true
+
+    -- attendre fin de wave
+    repeat
+        task.wait(0.1)
+    until not waveApproaching()
+
+    -- reset propre
+    IN_SAFE_ZONE = false
+    OverrideWaveCheck = false
+    CURRENT_SAFE_ZONE = nil
+
+    table.clear(Processing)
+    scanExisting()
+
+    dprint("✅ Wave terminée → reprise grab")
+end
+
+-- =========================================================
+-- SLIDE ENGINE
+stopSlide = function()
+    if SlideConnection then
+        SlideConnection:Disconnect()
+        SlideConnection = nil
+        dprint("Slide STOP")
+    end
+
+    local hrp = getHRP()
+    local hum = getHumanoid()
+
+    for _, v in ipairs(hrp:GetChildren()) do
+        if v:IsA("BodyVelocity") or v:IsA("BodyGyro") then
+            v:Destroy()
+        end
+    end
+
+    hum.PlatformStand = false
+    hum:ChangeState(Enum.HumanoidStateType.Running)
+    hrp.AssemblyLinearVelocity = Vector3.zero
+    hrp.AssemblyAngularVelocity = Vector3.zero
+end
+
+LocalPlayer.CharacterAdded:Connect(function()
+    task.wait(1)
+
+    RUN_ID += 1
+
+    IN_SAFE_ZONE = false
+    OverrideWaveCheck = false
+    CURRENT_SAFE_ZONE = nil
+
+    table.clear(Processing)
+    stopSlide()
+
+    dprint("♻️ Reset après mort | RUN_ID =", RUN_ID)
+
+    -- 🔁 REPRISE AUTOMATIQUE
+if AutoGrab then
+    task.delay(0.2, function()
+        scanExisting()
+    end)
+end
+
+end)
+
+
+slideTo = function(position, stopDist)
+    if not position then
+        dprint("⛔ slideTo annulé : position nil")
+        return
+    end
+
+    dprint("slideTo appelé")
+    stopDist = stopDist or 0.5
+    stopSlide()
+
+    local hrp = getHRP()
+    local hum = getHumanoid()
+
+    hum.PlatformStand = true
+    disableCollision()
+
+    local bv = Instance.new("BodyVelocity", hrp)
+    bv.MaxForce = Vector3.new(1e9, 1e9, 1e9)
+
+    local bg = Instance.new("BodyGyro", hrp)
+    bg.MaxTorque = Vector3.new(1e9, 1e9, 1e9)
+
+    SlideConnection = RunService.Heartbeat:Connect(function()
+
+        -- 🔒 SAFE ZONE = verrouillage total
+        if IN_SAFE_ZONE and CURRENT_SAFE_ZONE then
+            hrp.CFrame = CFrame.new(CURRENT_SAFE_ZONE)
+            return
+        end
+
+        if SAFE_ANCHOR then
+            dprint("Slide bloqué (SAFE_ANCHOR)")
+            return
+        end
+
+local approaching, dist = waveApproaching()
+if approaching and not OverrideWaveCheck and dist <= EMERGENCY_DISTANCE then
+    dprint("🚨 Wave dangereuse → safe zone")
+    stopSlide()
+    forceSafeZone()
+    return
+end
+
+
+
+        local dir = position - hrp.Position
+        local dist2 = dir.Magnitude
+
+        if dist2 < stopDist then
+            dprint("Slide arrivé")
+            stopSlide()
+            hrp.CFrame = CFrame.new(position)
+            return
+        end
+
+        bg.CFrame = CFrame.lookAt(hrp.Position, hrp.Position + dir)
+        bv.Velocity = dir.Unit * getSpeed()
+    end)
+end
+
+-- =========================================================
+-- MAIN LOGIC
+local function handleBrainrot(model)
+    if not AutoGrab then return end
+    if Processing[model] then return end
+    if not SelectedBrainrots[model.Name] then return end
+
+    Processing[model] = true
+    local myRun = RUN_ID
+
+    dprint("🧠 Brainrot détecté :", model.Name)
+
+    -- boucle principale
+    while AutoGrab and model.Parent and myRun == RUN_ID do
+
+        -- si on est mort / reset
+        if myRun ~= RUN_ID then
+            break
+        end
+
+        -- si on est en safe zone → on attend
+        if IN_SAFE_ZONE then
+            task.wait(0.1)
+            continue
+        end
+
+        -- détection wave
+        local approaching, dist = waveApproaching()
+        if approaching and dist <= EMERGENCY_DISTANCE then
+            dprint("🚨 Wave dangereuse → SAFE ZONE")
+            forceSafeZone()
+            task.wait(0.2)
+            continue
+        end
+
+        -- position du brainrot
+        local pos = getModelPosition(model)
+        if not pos then
+            dprint("⛔ Brainrot sans position")
+            break
+        end
+
+        -- slide vers le brainrot
+        slideTo(pos, 2)
+
+        -- attendre d’être proche
+        repeat
+            task.wait(0.05)
+            if myRun ~= RUN_ID then break end
+            if IN_SAFE_ZONE then break end
+        until not model.Parent or (getHRP().Position - pos).Magnitude < 4
+
+        if myRun ~= RUN_ID or IN_SAFE_ZONE then
+            continue
+        end
+
+        -- activer le ProximityPrompt
+        local prompt = getPrompt(model)
+        if prompt then
+            dprint("🎯 Prompt activé")
+            fireproximityprompt(prompt)
+            break
+        end
+
+        task.wait(0.1)
+    end
+
+    -- cleanup si reset / mort
+    if myRun ~= RUN_ID then
+        Processing[model] = nil
+        return
+    end
+
+    -- retour à la base après grab
+    local base = getMyBase()
+    if base and base.PrimaryPart then
+        dprint("🏠 Retour à la base")
+        slideTo(base.PrimaryPart.Position, 3)
+    end
+
+    Processing[model] = nil
+    dprint("✅ Brainrot terminé :", model.Name)
+end
+-- =========================================================
+-- CONNECTIONS
+scanExisting = function()
+    dprint("🔍 Scan brainrots (filtré AllBrainrots + sélection)")
+
+    for _, folder in ipairs(BrainrotsFolder:GetChildren()) do
+        if folder:IsA("Folder") then
+            for _, model in ipairs(folder:GetChildren()) do
+                if model:IsA("Model") then
+
+                    -- 🔒 filtre : uniquement brainrots autorisés
+                    if SelectedBrainrots[model.Name] then
+                        dprint("➡️ Brainrot valide trouvé :", model.Name)
+                        task.spawn(handleBrainrot, model)
+                    else
+                        dprint("⛔ Brainrot ignoré :", model.Name)
+                    end
+
+                end
+            end
+        end
+    end
+end
+
+connectAll = function()
+    dprint("🔗 Connexion nouveaux brainrots (filtré)")
+
+    for _, folder in ipairs(BrainrotsFolder:GetChildren()) do
+        if folder:IsA("Folder") then
+            table.insert(Connections,
+                folder.ChildAdded:Connect(function(model)
+                    if model:IsA("Model") and SelectedBrainrots[model.Name] then
+                        dprint("🆕 Nouveau brainrot valide :", model.Name)
+                        handleBrainrot(model)
+                    end
+                end)
+            )
+        end
+    end
+end
+
+
+disconnectAll = function()
+    dprint("disconnectAll appelé")
+
+    for i, c in ipairs(Connections) do
+        if c then
+            c:Disconnect()
+            dprint("Connection", i, "disconnect")
+        end
+    end
+
+    table.clear(Connections)
+    stopSlide()
+
+    dprint("Toutes les connexions supprimées")
+end
+
+-- =========================================================
+-- UI
+Tabs.Grab:AddSection("Brainrot Selector")
+
+Tabs.Grab:AddDropdown("BrainrotSelector", {
+    Title = "Select Brainrots",
+    Values = AllBrainrots,
+    Multi = true,
+    Default = {},
+    Callback = function(values)
+        table.clear(SelectedBrainrots)
+        for name, enabled in pairs(values) do
+            if enabled then SelectedBrainrots[name] = true end
+        end
+    end
+})
+
+Tabs.Grab:AddToggle("AutoGrab", {
+    Title = "Auto Grab Brainrot (Slide + Safe)",
+    Default = false,
+    Callback = function(v)
+        AutoGrab = v
+        if v then
+            scanExisting()
+            connectAll()
+        else
+            disconnectAll()
+        end
+    end
+})
+
+Tabs.Grab:AddSection("Webhook Settings")
+
+Tabs.Grab:AddInput("WebhookInput", {
+    Title = "Discord Webhook",
+    Default = WebhookUrl,
+    Callback = function(url)
+        WebhookUrl = url
+        writefile(WebhookFile, url)
+    end
+})
+
+Tabs.Grab:AddInput("DiscordIDInput", {
+    Title = "Discord ID (mention)",
+    Default = DiscordID,
+    Callback = function(id)
+        DiscordID = id
+        writefile(DiscordIdFile, id)
+    end
+})
+
+Tabs.Grab:AddToggle("WebhookToggle", {
+    Title = "Enable Webhook Notifications",
+    Default = true,
+    Callback = function(v)
+        WebhookEnabled = v
+    end
+})
+
+Tabs.Grab:AddButton({
+    Title = "Test Webhook",
+    Callback = function()
+        sendWebhook({
+            Name = "TEST",
+            Mutation = "Diamond",
+            Class = "Legendary",
+            Rate = "0.01%"
+        }, "TEST")
+    end
+})
+
+print("✅ SCRIPT FINAL : AntiWave + SafeZone + Slide + Webhook + Dropdown loaded")
+
+-- =========================================================
+-- AUTO COLLECT (5 MIN COOLDOWN)
+
+local Section = Tabs.Farm:AddSection("Collect")
+
+local AutoCollect = false
+local CollectCooldown = 300
+local LastCollectTime = 0
+
+local function autoCollect()
+    if not AutoCollect then return end
+
+    if os.clock() - LastCollectTime < CollectCooldown then
+        return
+    end
+
+    local base = getMyBase()
+    if not base then return end
+
+    local slots = base:FindFirstChild("Slots")
+    if not slots then return end
+
+    local collected = false
+
+    for i = 1, 30 do
+        local slot = slots:FindFirstChild("Slot"..i)
+        if slot then
+            local collectPart = slot:FindFirstChild("Collect")
+            if collectPart then
+                local gui = collectPart:FindFirstChildOfClass("SurfaceGui")
+                if gui and gui.Enabled then
+                    getHRP().CFrame = collectPart.CFrame + Vector3.new(0,3,0)
+                    task.wait(0.4)
+                    collected = true
+                end
+            end
+        end
+    end
+
+    if collected then
+        LastCollectTime = os.clock()
+    end
+end
+
+Tabs.Farm:AddToggle("AutoCollect", {
+    Title = "Auto Collect (5 min)",
+    Default = false,
+    Callback = function(v)
+        AutoCollect = v
+        if v then
+            task.spawn(function()
+                while AutoCollect do
+                    autoCollect()
+                    task.wait(1)
+                end
+            end)
+        else
+        end
+    end
+})
+
+-- =========================================================
+-- ANTI AFK (SAFE)
+
+local Players = game:GetService("Players")
+local VirtualUser = game:GetService("VirtualUser")
+
+local LocalPlayer = Players.LocalPlayer
+
+local AntiAFK = false
+local AntiAFKConnection = nil
+
+local function enableAntiAFK()
+    if AntiAFKConnection then return end
+
+    AntiAFKConnection = LocalPlayer.Idled:Connect(function()
+        if AntiAFK then
+            VirtualUser:Button2Down(Vector2.new(0,0), workspace.CurrentCamera.CFrame)
+            task.wait(0.1)
+            VirtualUser:Button2Up(Vector2.new(0,0), workspace.CurrentCamera.CFrame)
+            print("[ANTI-AFK] Action simulée")
+        end
+    end)
+end
+
+local function disableAntiAFK()
+    if AntiAFKConnection then
+        AntiAFKConnection:Disconnect()
+        AntiAFKConnection = nil
+    end
+end
+
+Tabs.Players:AddToggle("AntiAFK", {
+    Title = "Anti AFK",
+    Default = false,
+    Callback = function(v)
+        AntiAFK = v
+        if v then
+            enableAntiAFK()
+        else
+            disableAntiAFK()
+        end
+    end
+})
+
+
+-- =========================================================
+-- CONFIGURATION SYSTEM
+-- =========================================================
+SaveManager:SetLibrary(Fluent)
+InterfaceManager:SetLibrary(Fluent)
+SaveManager:IgnoreThemeSettings()
+InterfaceManager:BuildInterfaceSection(Tabs.Settings)
+SaveManager:BuildConfigSection(Tabs.Settings)
+SaveManager:LoadAutoloadConfig()
+Window:SelectTab(1)
+
+-- =========================
+-- MOBILE / PC BUTTON
+
+local Players = game:GetService("Players")
+local player = Players.LocalPlayer
+local playerGui = player:WaitForChild("PlayerGui")
+
+local screenGui = Instance.new("ScreenGui")
+screenGui.Name = "FluentMobileButton"
+screenGui.Parent = playerGui
+screenGui.ResetOnSpawn = false
+
+local openButton = Instance.new("ImageButton")
+openButton.Size = UDim2.new(0, 40, 0, 40)
+openButton.Position = UDim2.new(0, 10, 0, 10)
+openButton.BackgroundColor3 = Color3.fromRGB(0,0,0)
+openButton.BackgroundTransparency = 0.5
+openButton.Image = "rbxassetid://133520358863074"
+openButton.ScaleType = Enum.ScaleType.Fit
+openButton.BorderSizePixel = 0
+openButton.Parent = screenGui
+openButton.ZIndex = 10
+
+local uicorner = Instance.new("UICorner")
+uicorner.CornerRadius = UDim.new(0, 20)
+uicorner.Parent = openButton
+
+local dragging
+local dragInput
+local dragStart
+local startPos
+
+local function update(input)
+    local delta = input.Position - dragStart
+    openButton.Position = UDim2.new(
+        startPos.X.Scale, startPos.X.Offset + delta.X,
+        startPos.Y.Scale, startPos.Y.Offset + delta.Y
+    )
+end
+
+openButton.InputBegan:Connect(function(input)
+    if input.UserInputType == Enum.UserInputType.MouseButton1 or input.UserInputType == Enum.UserInputType.Touch then
+        dragging = true
+        dragStart = input.Position
+        startPos = openButton.Position
+
+        input.Changed:Connect(function()
+            if input.UserInputState == Enum.UserInputState.End then
+                dragging = false
+            end
+        end)
+    end
+end)
+
+openButton.InputChanged:Connect(function(input)
+    if input.UserInputType == Enum.UserInputType.MouseMovement or input.UserInputType == Enum.UserInputType.Touch then
+        dragInput = input
+    end
+end)
+
+game:GetService("UserInputService").InputChanged:Connect(function(input)
+    if input == dragInput and dragging then
+        update(input)
+    end
+end)
+
+openButton.MouseButton1Click:Connect(function()
+    local VirtualInputManager = game:GetService("VirtualInputManager")
+    VirtualInputManager:SendKeyEvent(true, Enum.KeyCode.LeftControl, false, game)
+    VirtualInputManager:SendKeyEvent(false, Enum.KeyCode.LeftControl, false, game)
+end)
+
+local function removeButton()
+    if openButton and openButton.Parent then
+        openButton:Destroy()
+    end
+end
+
+if Window.UI and Window.UI.CloseButton then
+    Window.UI.CloseButton.MouseButton1Click:Connect(function()
+        removeButton()
+    end)
+else
+    if Window.OnClose then
+        local oldClose = Window.OnClose
+        Window.OnClose = function()
+            removeButton()
+            if oldClose then oldClose() end
+        end
+    end
+end
