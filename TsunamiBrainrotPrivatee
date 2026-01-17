@@ -1014,6 +1014,9 @@ local LastCollectTime = 0
 
 local BasesNewFolder = Workspace:WaitForChild("Bases_NEW")
 
+-- =========================================================
+-- GET MY BASE (Bases_NEW)
+
 local function getMyBase()
     for _, base in ipairs(BasesNewFolder:GetChildren()) do
         if base:IsA("Model") then
@@ -1023,22 +1026,25 @@ local function getMyBase()
             end
         end
     end
-
     return nil
 end
 
+-- =========================================================
+-- AUTO COLLECT LOGIC
+
 local function autoCollect()
     if not AutoCollect then return end
+    if os.clock() - LastCollectTime < CollectCooldown then return end
 
-    if os.clock() - LastCollectTime < CollectCooldown then
+    local base = getMyBase()
+    if not base then
+        dprint("❌ AutoCollect : base introuvable")
         return
     end
 
-    local base = getMyBase()
-    if not base then return end
-
     local slots = base:FindFirstChild("Slots")
     if not slots then
+        dprint("❌ AutoCollect : Slots introuvables")
         return
     end
 
@@ -1047,12 +1053,14 @@ local function autoCollect()
 
     local collected = false
 
-    for _, slot in ipairs(slots:GetChildren()) do
-        if slot:IsA("Model") then
+    for i = 1, 30 do
+        local slot = slots:FindFirstChild("Slot" .. i)
+        if slot and slot:IsA("Model") then
             local collectPart = slot:FindFirstChild("Collect")
             if collectPart then
                 local gui = collectPart:FindFirstChildOfClass("SurfaceGui")
                 if gui and gui.Enabled then
+                    dprint("💰 Collect :", slot.Name)
                     hrp.CFrame = collectPart.CFrame + Vector3.new(0, 3, 0)
                     task.wait(0.35)
                     collected = true
@@ -1063,17 +1071,18 @@ local function autoCollect()
 
     if collected then
         LastCollectTime = os.clock()
-    else
+        dprint("✅ Collect terminé – cooldown lancé")
     end
 end
+
 
 Tabs.Farm:AddToggle("AutoCollect", {
     Title = "Auto Collect (10 min)",
     Default = false,
     Callback = function(v)
         AutoCollect = v
-
         if v then
+            dprint("✅ AutoCollect ON")
             task.spawn(function()
                 while AutoCollect do
                     autoCollect()
@@ -1081,9 +1090,11 @@ Tabs.Farm:AddToggle("AutoCollect", {
                 end
             end)
         else
+            dprint("⛔ AutoCollect OFF")
         end
     end
 })
+
 
 -- =========================================================
 -- ANTI AFK (STABLE)
