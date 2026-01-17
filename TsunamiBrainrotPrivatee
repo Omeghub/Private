@@ -916,13 +916,28 @@ Tabs.Events:AddToggle("AutoObbyTP", {
 })
 
 -- =========================================================
--- AUTO COLLECT (5 MIN COOLDOWN)
+-- AUTO COLLECT (BASES_NEW | 10 MIN COOLDOWN)
 
 local Section = Tabs.Farm:AddSection("Collect")
 
 local AutoCollect = false
-local CollectCooldown = 600
+local CollectCooldown = 600 -- 10 minutes
 local LastCollectTime = 0
+
+local BasesNewFolder = Workspace:WaitForChild("Bases_NEW")
+
+local function getMyBase()
+    for _, base in ipairs(BasesNewFolder:GetChildren()) do
+        if base:IsA("Model") then
+            local holder = base:GetAttribute("Holder")
+            if holder and tostring(holder) == tostring(UserId) then
+                return base
+            end
+        end
+    end
+
+    return nil
+end
 
 local function autoCollect()
     if not AutoCollect then return end
@@ -935,19 +950,23 @@ local function autoCollect()
     if not base then return end
 
     local slots = base:FindFirstChild("Slots")
-    if not slots then return end
+    if not slots then
+        return
+    end
+
+    local hrp = getHRP()
+    if not hrp then return end
 
     local collected = false
 
-    for i = 1, 30 do
-        local slot = slots:FindFirstChild("Slot"..i)
-        if slot then
+    for _, slot in ipairs(slots:GetChildren()) do
+        if slot:IsA("Model") then
             local collectPart = slot:FindFirstChild("Collect")
             if collectPart then
                 local gui = collectPart:FindFirstChildOfClass("SurfaceGui")
                 if gui and gui.Enabled then
-                    getHRP().CFrame = collectPart.CFrame + Vector3.new(0,3,0)
-                    task.wait(0.4)
+                    hrp.CFrame = collectPart.CFrame + Vector3.new(0, 3, 0)
+                    task.wait(0.35)
                     collected = true
                 end
             end
@@ -956,6 +975,7 @@ local function autoCollect()
 
     if collected then
         LastCollectTime = os.clock()
+    else
     end
 end
 
@@ -964,6 +984,7 @@ Tabs.Farm:AddToggle("AutoCollect", {
     Default = false,
     Callback = function(v)
         AutoCollect = v
+
         if v then
             task.spawn(function()
                 while AutoCollect do
@@ -975,6 +996,7 @@ Tabs.Farm:AddToggle("AutoCollect", {
         end
     end
 })
+
 
 -- =========================================================
 -- ANTI AFK (STABLE)
