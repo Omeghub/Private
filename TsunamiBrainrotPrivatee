@@ -997,7 +997,6 @@ Tabs.Farm:AddToggle("AutoCollect", {
     end
 })
 
-
 -- =========================================================
 -- ANTI AFK (STABLE)
 local Players = game:GetService("Players")
@@ -1009,7 +1008,7 @@ local LocalPlayer = Players.LocalPlayer
 local AntiAFK = false
 local AntiAFKConnection = nil
 local LAST_ACTION = 0
-local ACTION_DELAY = 600 -- secondes (large et safe)
+local ACTION_DELAY = 600
 
 local function startAntiAFK()
     if AntiAFKConnection then return end
@@ -1020,11 +1019,16 @@ local function startAntiAFK()
         if os.clock() - LAST_ACTION >= ACTION_DELAY then
             LAST_ACTION = os.clock()
 
-            VirtualUser:Button2Down(Vector2.new(0,0), workspace.CurrentCamera.CFrame)
-            task.wait(0.05)
-            VirtualUser:Button2Up(Vector2.new(0,0), workspace.CurrentCamera.CFrame)
+            local cam = workspace.CurrentCamera.CFrame
+            local pos = Vector2.new(0, 0)
 
-            print("[ANTI-AFK] Action envoyée")
+            VirtualUser:Button1Down(pos, cam)
+            task.wait(0.05)
+            VirtualUser:Button1Up(pos, cam)
+
+            VirtualUser:MoveMouse(pos)
+
+            print("[ANTI-AFK] Click souris envoyé")
         end
     end)
 end
@@ -1048,7 +1052,6 @@ Tabs.Players:AddToggle("AntiAFK", {
         end
     end
 })
-
 
 
 -- =========================================================
