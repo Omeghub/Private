@@ -895,7 +895,7 @@ Tabs.Events:AddToggle("AutoLucky", {
     end
 })
 -- =========================================================
--- AUTO TP OBBY END (RADIOACTIVE - FIX FINAL)
+-- AUTO TP OBBY END (RADIOACTIVE)
 
 local Players = game:GetService("Players")
 local Workspace = game:GetService("Workspace")
@@ -904,26 +904,16 @@ local LocalPlayer = Players.LocalPlayer
 local MapVariants = Workspace:WaitForChild("MapVariants")
 
 local AutoObbyTP = false
-local Conn = nil
-local HasTP = false
+local RadioactiveConn = nil
 
+-- util
 local function getHRP()
-    local char = LocalPlayer.Character
-        or LocalPlayer.CharacterAdded:Wait()
+    local char = LocalPlayer.Character or LocalPlayer.CharacterAdded:Wait()
     return char:WaitForChild("HumanoidRootPart")
 end
 
-local function getAnyPart(model)
-    for _, v in ipairs(model:GetDescendants()) do
-        if v:IsA("BasePart") then
-            return v
-        end
-    end
-    return nil
-end
-
 local function teleportToObbyEnd(radioactive)
-    if HasTP then return end
+    if not radioactive then return end
 
     local obbyEnd = radioactive:FindFirstChild("ObbyEnd")
     if not obbyEnd then
@@ -931,47 +921,58 @@ local function teleportToObbyEnd(radioactive)
         return
     end
 
-    local part = getAnyPart(obbyEnd)
-    if not part then
-        warn("[AUTO OBBY] Aucune part valide dans ObbyEnd")
-        return
+    local hrp = getHRP()
+
+    if obbyEnd:IsA("Model") then
+        if not obbyEnd.PrimaryPart then
+            warn("[AUTO OBBY] ObbyEnd sans PrimaryPart")
+            return
+        end
+        hrp.CFrame = obbyEnd.PrimaryPart.CFrame + Vector3.new(0, 5, 0)
+    else
+        hrp.CFrame = obbyEnd.CFrame + Vector3.new(0, 5, 0)
     end
 
-    local hrp = getHRP()
-    hrp.CFrame = part.CFrame + Vector3.new(0, 5, 0)
-
-    HasTP = true
-    print("[AUTO OBBY] TP vers ObbyEnd OK")
+    print("[AUTO OBBY] TP vers ObbyEnd")
 end
 
-local function onRadioactive(model)
+local function handleRadioactive(model)
     if not AutoObbyTP then return end
     if model.Name ~= "Radioactive" then return end
 
     print("[AUTO OBBY] Radioactive détecté")
-    teleportToObbyEnd(model)
+
+    task.spawn(function()
+        for _ = 1, 100 do
+            if not AutoObbyTP then return end
+            if model:FindFirstChild("ObbyEnd") then
+                teleportToObbyEnd(model)
+                return
+            end
+            task.wait(0.1)
+        end
+        warn("[AUTO OBBY] Timeout ObbyEnd")
+    end)
 end
 
 local function enableAutoObby()
-    HasTP = false
+    if RadioactiveConn then return end
 
+    -- scan immédiat
     local existing = MapVariants:FindFirstChild("Radioactive")
     if existing then
-        teleportToObbyEnd(existing)
+        handleRadioactive(existing)
     end
 
-    Conn = MapVariants.ChildAdded:Connect(onRadioactive)
+    RadioactiveConn = MapVariants.ChildAdded:Connect(handleRadioactive)
 end
 
 local function disableAutoObby()
-    HasTP = false
-    if Conn then
-        Conn:Disconnect()
-        Conn = nil
+    if RadioactiveConn then
+        RadioactiveConn:Disconnect()
+        RadioactiveConn = nil
     end
 end
-
-Tabs.Events:AddSection("Farm Lucky Block radio")
 
 Tabs.Events:AddToggle("AutoObbyTP", {
     Title = "Auto TP ObbyEnd (Radioactive)",
@@ -979,12 +980,15 @@ Tabs.Events:AddToggle("AutoObbyTP", {
     Callback = function(v)
         AutoObbyTP = v
         if v then
+            print("[AUTO OBBY] ON")
             enableAutoObby()
         else
+            print("[AUTO OBBY] OFF")
             disableAutoObby()
         end
     end
 })
+
 -- =========================================================
 -- AUTO JOIN GAME (BUTTON)
 
