@@ -1,52 +1,3 @@
-
-local function LoadModule(url)
-    local module
-    repeat
-        local success, result = pcall(function()
-            return loadstring(game:HttpGet(url))()
-        end)
-        if success then
-            module = result
-        else
-            warn("Module non chargé, retry dans 1s : "..url)
-            wait(1)
-        end
-    until module
-    return module
-end
-
-local player = game.Players.LocalPlayer
-repeat wait() until player and player.Character and player.Character:FindFirstChild("HumanoidRootPart")
---
-if getgenv().ReinjectLoaded then return end
-getgenv().ReinjectLoaded = true
-
-local Players = game:GetService("Players")
-local LocalPlayer = Players.LocalPlayer
-
-local ScriptURL = "https://raw.githubusercontent.com/Omegahub1/private/refs/heads/main/TsunamiBrainrotsPrivate"
-
-local queue = queue_on_teleport 
-           or (syn and syn.queue_on_teleport) 
-           or (fluxus and fluxus.queue_on_teleport) 
-           or queueonteleport
-
-if not queue then
-    return
-end
-
-local TeleportQueued = false
-
-LocalPlayer.OnTeleport:Connect(function()
-    if TeleportQueued then return end
-    TeleportQueued = true
-
-    queue([[
-        repeat task.wait() until game:IsLoaded()
-        task.wait(2)
-        loadstring(game:HttpGet("]]..ScriptURL..[[", true))()
-    ]])
-end)
 -- =========================================================
 -- CHARGEMENT DE FLUENT ET INTERFACE
 -- =========================================================
@@ -67,6 +18,7 @@ local Tabs = {
     Farm = Window:AddTab({ Title = "Farm", Icon = "sword" }),
     Players = Window:AddTab({Title = "Player", Icon = "layers" }),
     Grab = Window:AddTab({ Title = "Grab", Icon = "flame" }),
+    Events = Window:AddTab({ Title = "Event-Admin Abuse", Icon = "flame" }),
     Settings = Window:AddTab({ Title = "Settings", Icon = "settings" })
 }
 -- =========================================================
@@ -117,7 +69,7 @@ pcall(function() WebhookUrl = readfile(WebhookFile) end)
 pcall(function() DiscordID = readfile(DiscordIdFile) end)
 
 local RareMutations = { Diamond = true, Electric = true }
-local WebhookEnabled = false
+local WebhookEnabled = true
 
 local function sendWebhook(data, reason)
     if not WebhookEnabled or WebhookUrl == "" then return end
@@ -158,14 +110,17 @@ local Processing = {}
 local Connections = {}
 local SlideConnection = nil
 local OverrideWaveCheck = false
-local SAFE_ZONE_LOCK_RADIUS = 4 -- tolérance en studs
+local SAFE_ZONE_LOCK_RADIUS = 6
 local IN_SAFE_ZONE = false
 local CURRENT_SAFE_ZONE = nil
 local RUN_ID = 0
+local IS_GRABBING = false
+local GRAB_HOLD_TIME = 0.6
+
 
 local LastWaveEscape = 0
 local WAVE_ESCAPE_COOLDOWN = 0
-local EMERGENCY_DISTANCE = 200
+local EMERGENCY_DISTANCE = 270
 local SAFE_ANCHOR = false
 
 -- =========================================================
@@ -188,13 +143,12 @@ local SafeZones = {
 -- =========================================================
 -- BRAINROTS
 local AllBrainrots = {
-    "Fragola La La La",
-    "Matteo",
-    "Job Job Job Sahur",
-    "Dug Dug Dug",
-    "Bisonte Giuppitere",
     "Alessio",
-    "Esok Sekolah"
+    "Esok Sekolah",
+    "Diamantusa",
+    "Bulbito Bandito Traktorito",
+    "Burgerini Bearini",
+    "Strawberry Elephant"
 }
 
 local SelectedBrainrots = {}
@@ -230,7 +184,9 @@ end
 
 local function getPrompt(model)
     for _, v in ipairs(model:GetDescendants()) do
-        if v:IsA("ProximityPrompt") then return v end
+        if v:IsA("ProximityPrompt") and v.Enabled then
+            return v
+        end
     end
 end
 
@@ -248,6 +204,16 @@ local function getBrainrotStats(model)
     }
 end
 
+local function getRealBrainrot(renderedModel)
+    for _, child in ipairs(renderedModel:GetChildren()) do
+        if child:IsA("Model") then
+            return child
+        end
+    end
+    return nil
+end
+
+
 -- =========================================================
 -- SMART WAVE DETECTION (DEBUG)
 local LastWaveDistances = {}
@@ -261,10 +227,8 @@ local function waveApproaching()
             local last = LastWaveDistances[wave] or math.huge
             LastWaveDistances[wave] = dist
 
-            dprint("Wave check | dist:", math.floor(dist), "last:", math.floor(last))
+            if dist < 300 and dist < last then
 
-            if dist < 250 and dist < last then
-                dprint("⚠️ Wave APPROCHE | dist:", math.floor(dist))
                 return true, dist
             end
         end
@@ -283,8 +247,6 @@ local function getClosestSafeZone()
             best, dist = zone, d
         end
     end
-
-    dprint("SafeZone choisie | dist:", math.floor(dist))
     return best
 end
 
@@ -299,33 +261,40 @@ local function getSafeZoneAwayFromWave()
     for _, wave in ipairs(TsunamisFolder:GetChildren()) do
         if wave:IsA("Model") and wave.PrimaryPart then
             local wavePos = wave.PrimaryPart.Position
-
-            -- direction POUR FUIR la wave (derrière le joueur)
-            local escapeDir = (hrpPos - wavePos).Unit
+            local waveForward = wave.PrimaryPart.CFrame.LookVector
 
             for _, zone in ipairs(SafeZones) do
-                local vec = zone - hrpPos
-                local dist = vec.Magnitude
-                if dist > 0 then
-                    local dir = vec.Unit
-                    local dot = escapeDir:Dot(dir)
+                local vecFromWave = zone - wavePos
+                local vecFromPlayer = zone - hrpPos
 
-                    -- 🔒 STRICTEMENT DERRIÈRE (sinon on ignore)
-                    if dot > 0.65 then
-                        local score = dot * 1000 - dist
-                        if score > bestScore then
-                            bestScore = score
-                            bestZone = zone
-                        end
-                    end
+                local dist = vecFromPlayer.Magnitude
+                if dist < 1 then continue end
+
+                local dirFromWave = vecFromWave.Unit
+                local dirFromPlayer = vecFromPlayer.Unit
+
+                if waveForward:Dot(dirFromWave) <= 0 then
+                    continue
+                end
+
+                -- ✅ zone encore AVANT la wave
+                local lateralScore =
+                    math.abs(waveForward:Dot(dirFromPlayer)) * -500
+
+                local score =
+                    -dist
+                    + lateralScore
+
+                if score > bestScore then
+                    bestScore = score
+                    bestZone = zone
                 end
             end
         end
     end
 
-    return bestZone -- ⚠️ peut être nil (et c'est OK)
+    return bestZone
 end
-
 
 local scanExisting
 local connectAll
@@ -338,23 +307,20 @@ forceSafeZone = function()
     if IN_SAFE_ZONE then return end
 
     local safe = getSafeZoneAwayFromWave()
-if not safe then
+    if not safe then
     dprint("⛔ Aucune safe zone derrière → attente passive")
 
     repeat
         task.wait(0.2)
     until not waveApproaching()
 
-    -- 🔓 NE PAS BLOQUER LE SCRIPT
     OverrideWaveCheck = false
     IN_SAFE_ZONE = false
     CURRENT_SAFE_ZONE = nil
 
     dprint("✅ Wave passée → reprise normale")
     return
-end
-
-
+    end
 
     dprint("🚨 SAFE ZONE -> arrière uniquement")
     CURRENT_SAFE_ZONE = safe
@@ -368,12 +334,10 @@ end
     stopSlide()
     IN_SAFE_ZONE = true
 
-    -- attendre fin de wave
     repeat
         task.wait(0.1)
     until not waveApproaching()
 
-    -- reset propre
     IN_SAFE_ZONE = false
     OverrideWaveCheck = false
     CURRENT_SAFE_ZONE = nil
@@ -382,6 +346,81 @@ end
     scanExisting()
 
     dprint("✅ Wave terminée → reprise grab")
+end
+
+local function waveBlocksPath(targetPos)
+    local hrp = getHRP()
+    if not hrp then return false end
+
+    local toTarget = (targetPos - hrp.Position).Unit
+
+    for _, wave in ipairs(TsunamisFolder:GetChildren()) do
+        if wave:IsA("Model") and wave.PrimaryPart then
+            local wavePos = wave.PrimaryPart.Position
+            local waveDir = wave.PrimaryPart.CFrame.LookVector
+
+            local waveToPlayer = (hrp.Position - wavePos).Unit
+
+            -- wave qui vient vers moi
+            if waveDir:Dot(waveToPlayer) > 0.6 then
+                -- et qui bloque ma direction
+                if waveDir:Dot(toTarget) < -0.3 then
+                    dprint("🚫 Wave bloque le chemin vers la base")
+                    return true
+                end
+            end
+        end
+    end
+
+    return false
+end
+
+local function slideToBaseSafely()
+    local base = getMyBase()
+    if not base or not base.PrimaryPart then
+        dprint("❌ Base introuvable")
+        return
+    end
+
+    local basePos = base.PrimaryPart.Position
+
+    -- double check AVANT de partir
+    if waveBlocksPath(basePos) then
+        dprint("⚠️ Retour base bloqué → SAFE ZONE")
+        forceSafeZone()
+        return
+    end
+
+    dprint("🏠 Slide SAFE vers la base")
+    slideTo(basePos, 3)
+end
+
+local function grabPromptSafe(prompt)
+    if not prompt then return false end
+    if IS_GRABBING then return false end
+
+    IS_GRABBING = true
+
+    stopSlide()
+
+    local hrp = getHRP()
+    local hum = getHumanoid()
+
+    hum:ChangeState(Enum.HumanoidStateType.Physics)
+    hrp.AssemblyLinearVelocity = Vector3.zero
+    hrp.AssemblyAngularVelocity = Vector3.zero
+
+    -- HOLD réel du prompt
+    prompt:InputHoldBegin()
+    task.wait(prompt.HoldDuration > 0 and prompt.HoldDuration or GRAB_HOLD_TIME)
+    prompt:InputHoldEnd()
+
+    task.wait(0.05)
+
+    hum:ChangeState(Enum.HumanoidStateType.Running)
+    IS_GRABBING = false
+
+    return true
 end
 
 -- =========================================================
@@ -416,15 +455,16 @@ LocalPlayer.CharacterAdded:Connect(function()
     IN_SAFE_ZONE = false
     OverrideWaveCheck = false
     CURRENT_SAFE_ZONE = nil
+    -- reset lucky
+    ProcessingLucky = {}
 
     table.clear(Processing)
     stopSlide()
 
     dprint("♻️ Reset après mort | RUN_ID =", RUN_ID)
 
-    -- 🔁 REPRISE AUTOMATIQUE
 if AutoGrab then
-    task.delay(0.2, function()
+    task.delay(0, function()
         scanExisting()
     end)
 end
@@ -456,12 +496,6 @@ slideTo = function(position, stopDist)
 
     SlideConnection = RunService.Heartbeat:Connect(function()
 
-        -- 🔒 SAFE ZONE = verrouillage total
-        if IN_SAFE_ZONE and CURRENT_SAFE_ZONE then
-            hrp.CFrame = CFrame.new(CURRENT_SAFE_ZONE)
-            return
-        end
-
         if SAFE_ANCHOR then
             dprint("Slide bloqué (SAFE_ANCHOR)")
             return
@@ -480,12 +514,11 @@ end
         local dir = position - hrp.Position
         local dist2 = dir.Magnitude
 
-        if dist2 < stopDist then
-            dprint("Slide arrivé")
-            stopSlide()
-            hrp.CFrame = CFrame.new(position)
-            return
-        end
+if dist2 < stopDist then
+    dprint("Slide arrivé")
+    stopSlide()
+    return
+end
 
         bg.CFrame = CFrame.lookAt(hrp.Position, hrp.Position + dir)
         bv.Velocity = dir.Unit * getSpeed()
@@ -502,17 +535,20 @@ local function handleBrainrot(model)
     Processing[model] = true
     local myRun = RUN_ID
 
-    dprint("🧠 Brainrot détecté :", model.Name)
-
-    -- boucle principale
     while AutoGrab and model.Parent and myRun == RUN_ID do
 
-        -- si on est mort / reset
+        -- sécurité run
         if myRun ~= RUN_ID then
             break
         end
 
-        -- si on est en safe zone → on attend
+        -- si grab en cours, on attend
+        if IS_GRABBING then
+            task.wait(0.05)
+            continue
+        end
+
+        -- si en safe zone, on attend la fin complète
         if IN_SAFE_ZONE then
             task.wait(0.1)
             continue
@@ -521,7 +557,6 @@ local function handleBrainrot(model)
         -- détection wave
         local approaching, dist = waveApproaching()
         if approaching and dist <= EMERGENCY_DISTANCE then
-            dprint("🚨 Wave dangereuse → SAFE ZONE")
             forceSafeZone()
             task.wait(0.2)
             continue
@@ -530,36 +565,38 @@ local function handleBrainrot(model)
         -- position du brainrot
         local pos = getModelPosition(model)
         if not pos then
-            dprint("⛔ Brainrot sans position")
             break
         end
 
         -- slide vers le brainrot
         slideTo(pos, 2)
 
-        -- attendre d’être proche
+        -- attente d’arrivée ou interruption
         repeat
             task.wait(0.05)
             if myRun ~= RUN_ID then break end
             if IN_SAFE_ZONE then break end
-        until not model.Parent or (getHRP().Position - pos).Magnitude < 4
+            if IS_GRABBING then break end
+        until not model.Parent
+           or (getHRP().Position - pos).Magnitude < 4
 
-        if myRun ~= RUN_ID or IN_SAFE_ZONE then
+        -- re-check sécurité
+        if myRun ~= RUN_ID or IN_SAFE_ZONE or not model.Parent then
             continue
         end
 
-        -- activer le ProximityPrompt
+        -- grab sécurisé
         local prompt = getPrompt(model)
         if prompt then
-            dprint("🎯 Prompt activé")
-            fireproximityprompt(prompt)
-            break
+            if grabPromptSafe(prompt) then
+                break
+            end
         end
 
         task.wait(0.1)
     end
 
-    -- cleanup si reset / mort
+    -- cleanup si run invalide
     if myRun ~= RUN_ID then
         Processing[model] = nil
         return
@@ -569,30 +606,26 @@ local function handleBrainrot(model)
     local base = getMyBase()
     if base and base.PrimaryPart then
         dprint("🏠 Retour à la base")
-        slideTo(base.PrimaryPart.Position, 3)
+        slideToBaseSafely()
     end
 
     Processing[model] = nil
-    dprint("✅ Brainrot terminé :", model.Name)
 end
+
 -- =========================================================
 -- CONNECTIONS
 scanExisting = function()
-    dprint("🔍 Scan brainrots (filtré AllBrainrots + sélection)")
-
     for _, folder in ipairs(BrainrotsFolder:GetChildren()) do
         if folder:IsA("Folder") then
             for _, model in ipairs(folder:GetChildren()) do
                 if model:IsA("Model") then
 
-                    -- 🔒 filtre : uniquement brainrots autorisés
-                    if SelectedBrainrots[model.Name] then
-                        dprint("➡️ Brainrot valide trouvé :", model.Name)
-                        task.spawn(handleBrainrot, model)
-                    else
-                        dprint("⛔ Brainrot ignoré :", model.Name)
+                    if SelectedBrainrots[model.Name] and not Processing[model] then
+                        local real = getRealBrainrot(model)
+                        if real then
+                            task.spawn(handleBrainrot, real)
+                        end
                     end
-
                 end
             end
         end
@@ -600,38 +633,38 @@ scanExisting = function()
 end
 
 connectAll = function()
-    dprint("🔗 Connexion nouveaux brainrots (filtré)")
-
+    disconnectAll() -- 🔥 indispensable
+    dprint("🔌 connectAll")
     for _, folder in ipairs(BrainrotsFolder:GetChildren()) do
         if folder:IsA("Folder") then
-            table.insert(Connections,
-                folder.ChildAdded:Connect(function(model)
-                    if model:IsA("Model") and SelectedBrainrots[model.Name] then
-                        dprint("🆕 Nouveau brainrot valide :", model.Name)
-                        handleBrainrot(model)
-                    end
-                end)
-            )
+        local conn = folder.ChildAdded:Connect(function(model)
+        if not model:IsA("Model") then return end
+
+            local real = getRealBrainrot(model)
+            if real and SelectedBrainrots[real.Name] then
+            dprint("🆕 Brainrot détecté :", real.Name)
+             handleBrainrot(real)
+            end
+        end)
+            table.insert(Connections, conn)
         end
     end
 end
-
 
 disconnectAll = function()
     dprint("disconnectAll appelé")
 
-    for i, c in ipairs(Connections) do
+    RUN_ID += 1
+
+    for _, c in ipairs(Connections) do
         if c then
             c:Disconnect()
-            dprint("Connection", i, "disconnect")
         end
     end
-
     table.clear(Connections)
     stopSlide()
-
-    dprint("Toutes les connexions supprimées")
 end
+
 
 -- =========================================================
 -- UI
@@ -683,28 +716,204 @@ Tabs.Grab:AddInput("DiscordIDInput", {
         writefile(DiscordIdFile, id)
     end
 })
+-- =========================================================
+-- AUTO LUCKY BLOCK
 
-Tabs.Grab:AddToggle("WebhookToggle", {
-    Title = "Enable Webhook Notifications",
-    Default = true,
+local LuckyBlocksFolder = Workspace:WaitForChild("GlobalLuckyBlocks")
+
+local AutoLucky = false
+local ProcessingLucky = {}
+local LuckyConnections = {}
+
+local function isLuckyBlock(model)
+    return model:IsA("Model")
+       and model.Name:sub(1, 16) == "GlobalLuckyBlock_"
+end
+
+local function getLuckyPrompt(model)
+    for _, v in ipairs(model:GetDescendants()) do
+        if v:IsA("ProximityPrompt") and v.Enabled then
+            return v
+        end
+    end
+end
+
+local function handleLuckyBlock(model)
+    if not AutoLucky then return end
+    if ProcessingLucky[model] then return end
+    if not isLuckyBlock(model) then return end
+
+    ProcessingLucky[model] = true
+    local myRun = RUN_ID
+
+    dprint("🍀 Lucky Block ciblé :", model.Name)
+
+    while AutoLucky and model.Parent and myRun == RUN_ID do
+
+        if myRun ~= RUN_ID then break end
+
+        if IS_GRABBING or IN_SAFE_ZONE then
+            task.wait(0.1)
+            continue
+        end
+
+        -- wave check
+        local approaching, dist = waveApproaching()
+        if approaching and dist <= EMERGENCY_DISTANCE then
+            dprint("🌊 Wave pendant Lucky → SafeZone")
+            forceSafeZone()
+            task.wait(0.2)
+            continue
+        end
+
+        local pos = getModelPosition(model)
+        if not pos then break end
+
+        slideTo(pos, 2)
+
+        repeat
+            task.wait(0.05)
+            if myRun ~= RUN_ID then break end
+            if IN_SAFE_ZONE then break end
+        until not model.Parent
+           or (getHRP().Position - pos).Magnitude < 5
+
+        if not model.Parent or IN_SAFE_ZONE then
+            continue
+        end
+
+        local prompt = getLuckyPrompt(model)
+        if prompt then
+            grabPromptSafe(prompt)
+            break
+        end
+    end
+
+    ProcessingLucky[model] = nil
+end
+
+local function scanLuckyBlocks()
+    if not AutoLucky then return end
+
+    for _, model in ipairs(LuckyBlocksFolder:GetChildren()) do
+        if isLuckyBlock(model) and not ProcessingLucky[model] then
+            task.spawn(handleLuckyBlock, model)
+        end
+    end
+end
+
+local function connectLucky()
+    for _, c in ipairs(LuckyConnections) do
+        c:Disconnect()
+    end
+    table.clear(LuckyConnections)
+
+    local conn = LuckyBlocksFolder.ChildAdded:Connect(function(model)
+        if AutoLucky and isLuckyBlock(model) then
+            dprint("🆕 Lucky Block détecté :", model.Name)
+            handleLuckyBlock(model)
+        end
+    end)
+
+    table.insert(LuckyConnections, conn)
+end
+
+Tabs.Events:AddToggle("AutoLucky", {
+    Title = "Auto Lucky Blocks",
+    Default = false,
     Callback = function(v)
-        WebhookEnabled = v
+        AutoLucky = v
+
+        if v then
+            dprint("✅ Auto Lucky ON")
+            connectLucky()
+            scanLuckyBlocks()
+        else
+            dprint("⛔ Auto Lucky OFF")
+            ProcessingLucky = {}
+        end
     end
 })
+-- =========================================================
+-- AUTO TP OBBY END
+local Workspace = game:GetService("Workspace")
+local Players = game:GetService("Players")
 
-Tabs.Grab:AddButton({
-    Title = "Test Webhook",
-    Callback = function()
-        sendWebhook({
-            Name = "TEST",
-            Mutation = "Diamond",
-            Class = "Legendary",
-            Rate = "0.01%"
-        }, "TEST")
+local LocalPlayer = Players.LocalPlayer
+
+local MapVariants = Workspace:WaitForChild("MapVariants")
+
+local AutoObbyTP = false
+local RadioactiveConn = nil
+
+-- util
+local function getHRP()
+    local char = LocalPlayer.Character or LocalPlayer.CharacterAdded:Wait()
+    return char:WaitForChild("HumanoidRootPart")
+end
+
+local function waitForObbyEnd(timeout)
+    local start = tick()
+    while tick() - start < timeout do
+        local obby = MapVariants:FindFirstChild("ObbyEnd")
+        if obby and obby:IsA("Model") then
+            return obby
+        end
+        task.wait(0.1)
+    end
+    return nil
+end
+
+local function teleportToObbyEnd()
+    local obbyEnd = waitForObbyEnd(10) -- ⏱ max 10 secondes
+    if not obbyEnd or not obbyEnd.PrimaryPart then
+        warn("[AUTO OBBY] ObbyEnd introuvable ou invalide")
+        return
+    end
+
+    local hrp = getHRP()
+    hrp.CFrame = obbyEnd.PrimaryPart.CFrame + Vector3.new(0, 5, 0)
+    print("[AUTO OBBY] TP vers ObbyEnd")
+end
+
+local function onRadioactiveSpawned(model)
+    if not AutoObbyTP then return end
+    if model.Name ~= "Radioactive" then return end
+
+    print("[AUTO OBBY] Radioactive détecté")
+    teleportToObbyEnd()
+end
+
+local function enableAutoObbyTP()
+    if RadioactiveConn then return end
+
+    local existing = MapVariants:FindFirstChild("Radioactive")
+    if existing then
+        onRadioactiveSpawned(existing)
+    end
+
+    RadioactiveConn = MapVariants.ChildAdded:Connect(onRadioactiveSpawned)
+end
+
+local function disableAutoObbyTP()
+    if RadioactiveConn then
+        RadioactiveConn:Disconnect()
+        RadioactiveConn = nil
+    end
+end
+
+Tabs.Events:AddToggle("AutoObbyTP", {
+    Title = "Auto TP ObbyEnd (Radioactive)",
+    Default = false,
+    Callback = function(v)
+        AutoObbyTP = v
+        if v then
+            enableAutoObbyTP()
+        else
+            disableAutoObbyTP()
+        end
     end
 })
-
-print("✅ SCRIPT FINAL : AntiWave + SafeZone + Slide + Webhook + Dropdown loaded")
 
 -- =========================================================
 -- AUTO COLLECT (5 MIN COOLDOWN)
@@ -712,7 +921,7 @@ print("✅ SCRIPT FINAL : AntiWave + SafeZone + Slide + Webhook + Dropdown loade
 local Section = Tabs.Farm:AddSection("Collect")
 
 local AutoCollect = false
-local CollectCooldown = 300
+local CollectCooldown = 600
 local LastCollectTime = 0
 
 local function autoCollect()
@@ -751,7 +960,7 @@ local function autoCollect()
 end
 
 Tabs.Farm:AddToggle("AutoCollect", {
-    Title = "Auto Collect (5 min)",
+    Title = "Auto Collect (10 min)",
     Default = false,
     Callback = function(v)
         AutoCollect = v
@@ -768,30 +977,37 @@ Tabs.Farm:AddToggle("AutoCollect", {
 })
 
 -- =========================================================
--- ANTI AFK (SAFE)
-
+-- ANTI AFK (STABLE)
 local Players = game:GetService("Players")
 local VirtualUser = game:GetService("VirtualUser")
+local RunService = game:GetService("RunService")
 
 local LocalPlayer = Players.LocalPlayer
 
 local AntiAFK = false
 local AntiAFKConnection = nil
+local LAST_ACTION = 0
+local ACTION_DELAY = 600 -- secondes (large et safe)
 
-local function enableAntiAFK()
+local function startAntiAFK()
     if AntiAFKConnection then return end
 
-    AntiAFKConnection = LocalPlayer.Idled:Connect(function()
-        if AntiAFK then
+    AntiAFKConnection = RunService.Heartbeat:Connect(function()
+        if not AntiAFK then return end
+
+        if os.clock() - LAST_ACTION >= ACTION_DELAY then
+            LAST_ACTION = os.clock()
+
             VirtualUser:Button2Down(Vector2.new(0,0), workspace.CurrentCamera.CFrame)
-            task.wait(0.1)
+            task.wait(0.05)
             VirtualUser:Button2Up(Vector2.new(0,0), workspace.CurrentCamera.CFrame)
-            print("[ANTI-AFK] Action simulée")
+
+            print("[ANTI-AFK] Action envoyée")
         end
     end)
 end
 
-local function disableAntiAFK()
+local function stopAntiAFK()
     if AntiAFKConnection then
         AntiAFKConnection:Disconnect()
         AntiAFKConnection = nil
@@ -804,12 +1020,13 @@ Tabs.Players:AddToggle("AntiAFK", {
     Callback = function(v)
         AntiAFK = v
         if v then
-            enableAntiAFK()
+            startAntiAFK()
         else
-            disableAntiAFK()
+            stopAntiAFK()
         end
     end
 })
+
 
 
 -- =========================================================
