@@ -23,7 +23,7 @@ getgenv().ReinjectLoaded = true
 local Players = game:GetService("Players")
 local LocalPlayer = Players.LocalPlayer
 
-local ScriptURL = "https://raw.githubusercontent.com/Omeghub/Private/refs/heads/main/TsunamiBrainrotPrivatee"
+local ScriptURL = "https://raw.githubusercontent.com/Omegahub1/private/refs/heads/main/TsunamiBrainrotsPrivate"
 
 local queue = queue_on_teleport 
            or (syn and syn.queue_on_teleport) 
@@ -80,7 +80,7 @@ local LocalPlayer = Players.LocalPlayer
 local UserId = LocalPlayer.UserId
 
 local BrainrotsFolder = Workspace:WaitForChild("ActiveBrainrots")
-local BasesFolder = Workspace:WaitForChild("Bases")
+local BasesFolder = Workspace:WaitForChild("Bases_NEW")
 local TsunamisFolder = Workspace:WaitForChild("ActiveTsunamis")
 
 -- =========================================================
@@ -216,14 +216,26 @@ local function disableCollision()
     end
 end
 
+-- =========================================================
+-- GET MY BASE (Bases_NEW compatible)
+
 local function getMyBase()
-    for i = 1, 5 do
-        local base = BasesFolder:FindFirstChild("Base" .. i)
-        if base and base:GetAttribute("Holder") == UserId then
-            return base
+    local bases = Workspace:WaitForChild("Bases_NEW")
+
+    for _, base in ipairs(bases:GetChildren()) do
+        if base:IsA("Model") then
+            local holder = base:GetAttribute("Holder")
+            if holder == UserId then
+                dprint("🏠 Base trouvée :", base.Name)
+                return base
+            end
         end
     end
+
+    dprint("❌ Aucune base trouvée pour l'ID :", UserId)
+    return nil
 end
+
 
 local function getModelPosition(model)
     if model.PrimaryPart then return model.PrimaryPart.Position end
@@ -883,7 +895,7 @@ Tabs.Events:AddToggle("AutoLucky", {
     end
 })
 -- =========================================================
--- AUTO TP OBBY END (FIXED)
+-- AUTO TP OBBY END (RADIOACTIVE - FIX FINAL)
 
 local Players = game:GetService("Players")
 local Workspace = game:GetService("Workspace")
@@ -892,45 +904,47 @@ local LocalPlayer = Players.LocalPlayer
 local MapVariants = Workspace:WaitForChild("MapVariants")
 
 local AutoObbyTP = false
-local RadioactiveConn = nil
-local AlreadyTP = false
+local Conn = nil
+local HasTP = false
 
--- util
 local function getHRP()
     local char = LocalPlayer.Character
         or LocalPlayer.CharacterAdded:Wait()
     return char:WaitForChild("HumanoidRootPart")
 end
 
-local function waitForObbyEnd(radioactive, timeout)
-    local start = os.clock()
-    while os.clock() - start < timeout do
-        local obbyEnd = radioactive:FindFirstChild("ObbyEnd")
-        if obbyEnd and obbyEnd:IsA("Model") and obbyEnd.PrimaryPart then
-            return obbyEnd
+local function getAnyPart(model)
+    for _, v in ipairs(model:GetDescendants()) do
+        if v:IsA("BasePart") then
+            return v
         end
-        task.wait(0.1)
     end
     return nil
 end
 
 local function teleportToObbyEnd(radioactive)
-    if AlreadyTP then return end
+    if HasTP then return end
 
-    local obbyEnd = waitForObbyEnd(radioactive, 15)
+    local obbyEnd = radioactive:FindFirstChild("ObbyEnd")
     if not obbyEnd then
-        warn("[AUTO OBBY] ObbyEnd introuvable dans Radioactive")
+        warn("[AUTO OBBY] ObbyEnd introuvable")
+        return
+    end
+
+    local part = getAnyPart(obbyEnd)
+    if not part then
+        warn("[AUTO OBBY] Aucune part valide dans ObbyEnd")
         return
     end
 
     local hrp = getHRP()
-    hrp.CFrame = obbyEnd.PrimaryPart.CFrame + Vector3.new(0, 5, 0)
+    hrp.CFrame = part.CFrame + Vector3.new(0, 5, 0)
 
-    AlreadyTP = true
-    print("[AUTO OBBY] TP vers ObbyEnd effectué")
+    HasTP = true
+    print("[AUTO OBBY] TP vers ObbyEnd OK")
 end
 
-local function onRadioactiveSpawned(model)
+local function onRadioactive(model)
     if not AutoObbyTP then return end
     if model.Name ~= "Radioactive" then return end
 
@@ -938,25 +952,26 @@ local function onRadioactiveSpawned(model)
     teleportToObbyEnd(model)
 end
 
-local function enableAutoObbyTP()
-    AlreadyTP = false
+local function enableAutoObby()
+    HasTP = false
 
-    -- déjà présent ?
     local existing = MapVariants:FindFirstChild("Radioactive")
     if existing then
-        onRadioactiveSpawned(existing)
+        teleportToObbyEnd(existing)
     end
 
-    RadioactiveConn = MapVariants.ChildAdded:Connect(onRadioactiveSpawned)
+    Conn = MapVariants.ChildAdded:Connect(onRadioactive)
 end
 
-local function disableAutoObbyTP()
-    AlreadyTP = false
-    if RadioactiveConn then
-        RadioactiveConn:Disconnect()
-        RadioactiveConn = nil
+local function disableAutoObby()
+    HasTP = false
+    if Conn then
+        Conn:Disconnect()
+        Conn = nil
     end
 end
+
+Tabs.Events:AddSection("Farm Lucky Block radio")
 
 Tabs.Events:AddToggle("AutoObbyTP", {
     Title = "Auto TP ObbyEnd (Radioactive)",
@@ -964,119 +979,29 @@ Tabs.Events:AddToggle("AutoObbyTP", {
     Callback = function(v)
         AutoObbyTP = v
         if v then
-            enableAutoObbyTP()
+            enableAutoObby()
         else
-            disableAutoObbyTP()
+            disableAutoObby()
         end
     end
 })
-
 -- =========================================================
--- AUTO EVENTPARTS TP
+-- AUTO JOIN GAME (BUTTON)
+
 local Players = game:GetService("Players")
-local Workspace = game:GetService("Workspace")
+local TeleportService = game:GetService("TeleportService")
 
 local LocalPlayer = Players.LocalPlayer
+local TARGET_GAME_ID = 131623223084840
 
-local AutoEventTP = false
-local EventFolderConnection = nil
-local EventChildConnection = nil
-local ProcessingEvent = {}
-
-local function getHRP()
-    local char = LocalPlayer.Character
-    if not char then return nil end
-    return char:FindFirstChild("HumanoidRootPart")
-end
-
-local function tpToModel(model)
-    if ProcessingEvent[model] then return end
-    ProcessingEvent[model] = true
-
-    local hrp = getHRP()
-    if not hrp then return end
-
-    local pos
-    if model.PrimaryPart then
-        pos = model.PrimaryPart.CFrame
-    else
-        pos = model:GetPivot()
-    end
-
-    hrp.CFrame = pos + Vector3.new(0, 4, 0)
-    print("[EVENT] TP sur :", model.Name)
-
-    task.delay(1, function()
-        ProcessingEvent[model] = nil
-    end)
-end
-
-local function scanEventParts(folder)
-    for _, model in ipairs(folder:GetChildren()) do
-        if model:IsA("Model") then
-            tpToModel(model)
-        end
-    end
-end
-
-local function connectEventParts(folder)
-    if EventChildConnection then
-        EventChildConnection:Disconnect()
-    end
-
-    EventChildConnection = folder.ChildAdded:Connect(function(child)
-        if AutoEventTP and child:IsA("Model") then
-            print("[EVENT] Nouveau model détecté :", child.Name)
-            tpToModel(child)
-        end
-    end)
-end
-
-local function startEventWatcher()
-    if EventFolderConnection then return end
-
-    EventFolderConnection = Workspace.ChildAdded:Connect(function(child)
-        if child.Name == "EventParts" and child:IsA("Folder") then
-            print("[EVENT] EventParts détecté")
-            scanEventParts(child)
-            connectEventParts(child)
-        end
-    end)
-
-    -- au cas où il existe déjà
-    local existing = Workspace:FindFirstChild("EventParts")
-    if existing and existing:IsA("Folder") then
-        scanEventParts(existing)
-        connectEventParts(existing)
-    end
-end
-
-local function stopEventWatcher()
-    if EventFolderConnection then
-        EventFolderConnection:Disconnect()
-        EventFolderConnection = nil
-    end
-    if EventChildConnection then
-        EventChildConnection:Disconnect()
-        EventChildConnection = nil
-    end
-    table.clear(ProcessingEvent)
-end
-
-Tabs.Events:AddToggle("AutoEventTP", {
-    Title = "Auto TP Coins radio",
-    Default = false,
-    Callback = function(v)
-        AutoEventTP = v
-        if v then
-            print("[EVENT] Auto TP ON")
-            startEventWatcher()
-        else
-            print("[EVENT] Auto TP OFF")
-            stopEventWatcher()
-        end
+Tabs.Events:AddButton({
+    Title = "Join Game",
+    Description = "Rejoint auto Game Farm Lucky Block",
+    Callback = function()
+        TeleportService:Teleport(TARGET_GAME_ID, LocalPlayer)
     end
 })
+
 
 -- =========================================================
 -- AUTO COLLECT (BASES_NEW | 10 MIN COOLDOWN)
