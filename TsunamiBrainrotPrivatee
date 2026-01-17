@@ -974,6 +974,8 @@ local function disableAutoObby()
     end
 end
 
+Tabs.Events:AddSection("Auto Farm Muta Radio")
+
 Tabs.Events:AddToggle("AutoObbyTP", {
     Title = "Auto TP ObbyEnd (Radioactive)",
     Default = false,
